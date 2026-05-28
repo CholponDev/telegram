@@ -1,0 +1,74 @@
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef3f8;
+  padding: 20px;
+}
+
+.container {
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  padding: 28px;
+  border-radius: 20px;
+  box-shadow: 0 12px 30px rgba(23, 33, 43, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.container h2 {
+  margin: 0 0 8px;
+  text-align: center;
+  color: #17212b;
+  font-size: 26px;
+}
+
+.container input {
+  width: 100%;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid #d7deea;
+  border-radius: 12px;
+  outline: none;
+  font-size: 15px;
+  background: #f8fafc;
+}
+
+.container input:focus {
+  border-color: #4f8cff;
+  background: #ffffff;
+}
+
+.container button {
+  height: 46px;
+  border: none;
+  border-radius: 12px;
+  background: #4f8cff;
+  color: white;
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.container button:hover {
+  background: #3278f6;
+}
+
+.container p {
+  margin: 4px 0 0;
+  text-align: center;
+  color: #7b8794;
+  font-size: 14px;
+}
+
+.container a {
+  color: #4f8cff;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.container a:hover {
+  text-decoration: underline;
+}
