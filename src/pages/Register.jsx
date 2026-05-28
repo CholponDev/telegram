@@ -1,24 +1,35 @@
-import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import React, { useState } from "react";
 import {
   createUserWithEmailAndPassword,
   updateProfile,
 } from "firebase/auth";
-import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import {
+  doc,
+  setDoc,
+  serverTimestamp,
+} from "firebase/firestore";
+import { useNavigate, Link } from "react-router-dom";
 
 import { auth, db } from "../firebase/firebase";
-import style from "../styles/Auth.module.css";
+import style from "../styles/Register.module.css";
 
 function Register() {
   const navigate = useNavigate();
 
   const [form, setForm] = useState({
     name: "",
+    phone: "",
     email: "",
     password: "",
   });
 
-  const [error, setError] = useState("");
+  const normalizePhone = (phone) => {
+    return phone.trim().replace(/[^\d+]/g, "").replace(/(?!^)\+/g, "");
+  };
+
+  const getPhoneDigits = (phone) => {
+    return phone.replace(/\D/g, "");
+  };
 
   const handleChange = (e) => {
     setForm({
@@ -29,61 +40,78 @@ function Register() {
 
   const handleRegister = async (e) => {
     e.preventDefault();
-    setError("");
 
-    if (!form.name || !form.email || !form.password) {
-      setError("Заполните все поля");
+    const name = form.name.trim();
+    const phone = normalizePhone(form.phone);
+    const searchPhone = getPhoneDigits(phone);
+
+    if (!name || !phone || !form.email || !form.password) {
+      alert("Заполните все поля");
+      return;
+    }
+
+    if (searchPhone.length < 9) {
+      alert("Введите правильный номер телефона");
       return;
     }
 
     try {
-      const result = await createUserWithEmailAndPassword(
+      const userCredential = await createUserWithEmailAndPassword(
         auth,
         form.email,
         form.password
       );
 
-      await updateProfile(result.user, {
-        displayName: form.name,
+      const user = userCredential.user;
+
+      await updateProfile(user, {
+        displayName: name,
       });
 
-      await setDoc(doc(db, "users", result.user.uid), {
-        uid: result.user.uid,
-        name: form.name,
+      await setDoc(doc(db, "users", user.uid), {
+        uid: user.uid,
+        name: name,
+        searchName: name.toLowerCase(),
+        phone: phone,
+        searchPhone: searchPhone,
         email: form.email,
-        avatarUrl: "",
-        role: "user",
-        status: "online",
+        photoURL: "",
         createdAt: serverTimestamp(),
-        lastSeen: serverTimestamp(),
       });
 
-      navigate("/chat");
-    } catch (err) {
-      console.error(err);
+      alert("Регистрация прошла успешно");
+      navigate("/users");
+    } catch (error) {
+      console.error(error);
 
-      if (err.code === "auth/email-already-in-use") {
-        setError("Этот email уже зарегистрирован");
-      } else if (err.code === "auth/weak-password") {
-        setError("Пароль должен быть минимум 6 символов");
+      if (error.code === "auth/email-already-in-use") {
+        alert("Этот email уже зарегистрирован");
+      } else if (error.code === "auth/weak-password") {
+        alert("Пароль должен быть минимум 6 символов");
       } else {
-        setError("Ошибка регистрации");
+        alert("Ошибка регистрации");
       }
     }
   };
 
   return (
-    <div className={style.page}>
-      <form className={style.form} onSubmit={handleRegister}>
+    <section className={style.page}>
+      <form className={style.container} onSubmit={handleRegister}>
         <h2>Регистрация</h2>
-
-        {error && <p className={style.error}>{error}</p>}
 
         <input
           type="text"
           name="name"
-          placeholder="Имя"
+          placeholder="Ваше имя"
           value={form.name}
+          onChange={handleChange}
+        />
+
+        <input
+          type="tel"
+          name="phone"
+          placeholder="Телефон, например +996700123456"
+          value={form.phone}
           onChange={handleChange}
         />
 
@@ -109,7 +137,7 @@ function Register() {
           Уже есть аккаунт? <Link to="/login">Войти</Link>
         </p>
       </form>
-    </div>
+    </section>
   );
 }
 

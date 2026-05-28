@@ -1,295 +1,351 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { signOut } from "firebase/auth";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  addDoc,
   collection,
   doc,
-  addDoc,
-  updateDoc,
-  deleteDoc,
+  endAt,
+  getDocs,
+  limit,
   onSnapshot,
-  query,
   orderBy,
+  query,
   serverTimestamp,
+  setDoc,
+  startAt,
 } from "firebase/firestore";
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { useNavigate } from "react-router-dom";
 
 import { auth, db } from "../firebase/firebase";
-import { useAuth } from "../context/AuthContext";
 import style from "../styles/Chat.module.css";
 
 function Chat() {
   const navigate = useNavigate();
-  const { currentUser } = useAuth();
 
-  const [users, setUsers] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+
+  const [searchText, setSearchText] = useState("");
+  const [contacts, setContacts] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
 
   const [messages, setMessages] = useState([]);
-  const [text, setText] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
+  const [messageText, setMessageText] = useState("");
 
-  const [editingId, setEditingId] = useState(null);
-  const [editingText, setEditingText] = useState("");
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [error, setError] = useState("");
 
   const chatId = useMemo(() => {
-    if (!currentUser || !selectedUser) return null;
+    if (!currentUser?.uid || !selectedUser?.id) return null;
 
-    return [currentUser.uid, selectedUser.uid].sort().join("_");
+    return [currentUser.uid, selectedUser.id].sort().join("_");
   }, [currentUser, selectedUser]);
 
+  const getPhoneDigits = (value) => {
+    return value.replace(/\D/g, "");
+  };
+
+  const isPhoneSearch = (value) => {
+    return /\d/.test(value) && !/[a-zа-яё]/i.test(value);
+  };
+
+  const createChatId = (uid1, uid2) => {
+    return [uid1, uid2].sort().join("_");
+  };
+
   useEffect(() => {
-    const usersQuery = query(collection(db, "users"), orderBy("name"));
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (!user) {
+        navigate("/login");
+        return;
+      }
 
-    const unsubscribe = onSnapshot(usersQuery, (snapshot) => {
-      const usersList = snapshot.docs
-        .map((doc) => doc.data())
-        .filter((user) => user.uid !== currentUser.uid);
-
-      setUsers(usersList);
+      setCurrentUser(user);
     });
 
     return () => unsubscribe();
-  }, [currentUser.uid]);
+  }, [navigate]);
+
+  const loadContacts = useCallback(
+    async (value = "") => {
+      if (!currentUser?.uid) return;
+
+      setContactsLoading(true);
+      setError("");
+
+      try {
+        const usersRef = collection(db, "users");
+
+        const searchValue = value.trim().toLowerCase();
+        const digits = getPhoneDigits(searchValue);
+
+        let q;
+
+        if (!searchValue) {
+          q = query(usersRef, orderBy("searchName"), limit(20));
+        } else if (isPhoneSearch(searchValue)) {
+          q = query(
+            usersRef,
+            orderBy("searchPhone"),
+            startAt(digits),
+            endAt(digits + "\uf8ff"),
+            limit(20)
+          );
+        } else {
+          q = query(
+            usersRef,
+            orderBy("searchName"),
+            startAt(searchValue),
+            endAt(searchValue + "\uf8ff"),
+            limit(20)
+          );
+        }
+
+        const snapshot = await getDocs(q);
+
+        const data = snapshot.docs
+          .map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }))
+          .filter((user) => user.id !== currentUser.uid);
+
+        setContacts(data);
+      } catch (err) {
+        console.error(err);
+        setError("Ошибка при загрузке контактов");
+      } finally {
+        setContactsLoading(false);
+      }
+    },
+    [currentUser]
+  );
 
   useEffect(() => {
-    if (!chatId) return;
+    if (currentUser?.uid) {
+      loadContacts();
+    }
+  }, [currentUser, loadContacts]);
+
+  useEffect(() => {
+    if (!chatId) {
+      setMessages([]);
+      return;
+    }
+
+    setMessagesLoading(true);
 
     const messagesRef = collection(db, "chats", chatId, "messages");
-    const messagesQuery = query(messagesRef, orderBy("createdAt", "asc"));
 
-    const unsubscribe = onSnapshot(messagesQuery, (snapshot) => {
-      const messagesList = snapshot.docs.map((doc) => ({
-        id: doc.id,
-        ...doc.data(),
-      }));
+    const q = query(messagesRef, orderBy("createdAt", "asc"));
 
-      setMessages(messagesList);
-    });
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const data = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+
+        setMessages(data);
+        setMessagesLoading(false);
+      },
+      (err) => {
+        console.error(err);
+        setError("Ошибка при загрузке сообщений");
+        setMessagesLoading(false);
+      }
+    );
 
     return () => unsubscribe();
   }, [chatId]);
 
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
+  const handleSearch = useCallback(() => {
+    loadContacts(searchText);
+  }, [loadContacts, searchText]);
 
-    if (!text.trim() && !imageUrl.trim()) return;
-    if (!selectedUser || !chatId) return;
-
-    const chatRef = doc(db, "chats", chatId);
-
-    await updateDoc(chatRef, {
-      lastMessage: text || "Изображение",
-      updatedAt: serverTimestamp(),
-    }).catch(async () => {
-      await import("firebase/firestore").then(async ({ setDoc }) => {
-        await setDoc(chatRef, {
-          chatId,
-          type: "private",
-          members: [currentUser.uid, selectedUser.uid],
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          lastMessage: text || "Изображение",
-        });
-      });
-    });
-
-    await addDoc(collection(db, "chats", chatId, "messages"), {
-      senderId: currentUser.uid,
-      receiverId: selectedUser.uid,
-      text: text.trim(),
-      imageUrl: imageUrl.trim(),
-      createdAt: serverTimestamp(),
-      updatedAt: null,
-      isEdited: false,
-    });
-
-    setText("");
-    setImageUrl("");
-  };
-
-  const handleDeleteMessage = async (messageId) => {
-    if (!chatId) return;
-
-    await deleteDoc(doc(db, "chats", chatId, "messages", messageId));
-  };
-
-  const startEdit = (message) => {
-    setEditingId(message.id);
-    setEditingText(message.text);
-  };
-
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditingText("");
-  };
-
-  const saveEdit = async (messageId) => {
-    if (!editingText.trim()) return;
-
-    await updateDoc(doc(db, "chats", chatId, "messages", messageId), {
-      text: editingText.trim(),
-      updatedAt: serverTimestamp(),
-      isEdited: true,
-    });
-
-    cancelEdit();
-  };
-
-  const handleLogout = async () => {
-    try {
-      await updateDoc(doc(db, "users", currentUser.uid), {
-        status: "offline",
-        lastSeen: serverTimestamp(),
-      });
-
-      await signOut(auth);
-      navigate("/login");
-    } catch (error) {
-      console.error(error);
+  const handleSearchKeyDown = (e) => {
+    if (e.key === "Enter") {
+      handleSearch();
     }
   };
 
+  const handleSelectUser = async (user) => {
+    if (!currentUser?.uid) return;
+
+    setSelectedUser(user);
+
+    const newChatId = createChatId(currentUser.uid, user.id);
+
+    await setDoc(
+      doc(db, "chats", newChatId),
+      {
+        chatId: newChatId,
+        participants: [currentUser.uid, user.id],
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  };
+
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+
+    const text = messageText.trim();
+
+    if (!text || !chatId || !currentUser?.uid || !selectedUser?.id) return;
+
+    setMessageText("");
+
+    try {
+      await addDoc(collection(db, "chats", chatId, "messages"), {
+        text,
+        senderId: currentUser.uid,
+        receiverId: selectedUser.id,
+        createdAt: serverTimestamp(),
+      });
+
+      await setDoc(
+        doc(db, "chats", chatId),
+        {
+          chatId,
+          participants: [currentUser.uid, selectedUser.id],
+          lastMessage: text,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error(err);
+      setError("Ошибка при отправке сообщения");
+    }
+  };
+
+  const handleLogout = async () => {
+    await signOut(auth);
+    navigate("/login");
+  };
+
   return (
-    <div className={style.page}>
+    <section className={style.page}>
       <aside className={style.sidebar}>
         <div className={style.sidebarHeader}>
-          <h2>Messenger</h2>
-
-          <div className={style.headerBtns}>
-            <Link to="/profile">Профиль</Link>
-            <button onClick={handleLogout}>Выйти</button>
+          <div>
+            <h2>Контакты</h2>
+            <p>Найдите друга и начните чат</p>
           </div>
+
+          <button className={style.logoutBtn} onClick={handleLogout}>
+            Выйти
+          </button>
         </div>
 
-        <h3>Пользователи</h3>
+        <div className={style.searchBox}>
+          <input
+            type="text"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Имя или телефон..."
+          />
 
-        <div className={style.usersList}>
-          {users.map((user) => (
+          <button type="button" onClick={handleSearch}>
+            {contactsLoading ? "..." : "Поиск"}
+          </button>
+        </div>
+
+        {error && <p className={style.error}>{error}</p>}
+
+        <div className={style.contactsList}>
+          {contacts.map((user) => (
             <button
-              key={user.uid}
-              className={`${style.userCard} ${
-                selectedUser?.uid === user.uid ? style.activeUser : ""
+              key={user.id}
+              className={`${style.contactCard} ${
+                selectedUser?.id === user.id ? style.activeContact : ""
               }`}
-              onClick={() => setSelectedUser(user)}
+              onClick={() => handleSelectUser(user)}
             >
               <div className={style.avatar}>
-                {user.avatarUrl ? (
-                  <img src={user.avatarUrl} alt={user.name} />
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt={user.name} loading="lazy" />
                 ) : (
-                  <span>{user.name?.charAt(0)}</span>
+                  <span>{user.name?.charAt(0)?.toUpperCase() || "U"}</span>
                 )}
               </div>
 
-              <div>
-                <h4>{user.name}</h4>
-                <p className={user.status === "online" ? style.online : ""}>
-                  {user.status === "online" ? "онлайн" : "офлайн"}
-                </p>
+              <div className={style.contactInfo}>
+                <h3>{user.name || "Без имени"}</h3>
+                <p>{user.phone || user.email}</p>
               </div>
             </button>
           ))}
+
+          {!contactsLoading && contacts.length === 0 && (
+            <p className={style.empty}>Контакты не найдены</p>
+          )}
         </div>
       </aside>
 
       <main className={style.chat}>
         {!selectedUser ? (
-          <div className={style.emptyChat}>
-            <h2>Выберите пользователя</h2>
-            <p>Чтобы начать личный чат</p>
+          <div className={style.noChat}>
+            <h2>Выберите контакт</h2>
+            <p>Слева найдите пользователя и откройте переписку.</p>
           </div>
         ) : (
           <>
             <div className={style.chatHeader}>
               <div className={style.avatar}>
-                {selectedUser.avatarUrl ? (
-                  <img src={selectedUser.avatarUrl} alt={selectedUser.name} />
+                {selectedUser.photoURL ? (
+                  <img
+                    src={selectedUser.photoURL}
+                    alt={selectedUser.name}
+                    loading="lazy"
+                  />
                 ) : (
-                  <span>{selectedUser.name?.charAt(0)}</span>
+                  <span>
+                    {selectedUser.name?.charAt(0)?.toUpperCase() || "U"}
+                  </span>
                 )}
               </div>
 
               <div>
-                <h3>{selectedUser.name}</h3>
-                <p className={selectedUser.status === "online" ? style.online : ""}>
-                  {selectedUser.status === "online" ? "онлайн" : "офлайн"}
-                </p>
+                <h2>{selectedUser.name || "Без имени"}</h2>
+                <p>{selectedUser.phone || selectedUser.email}</p>
               </div>
             </div>
 
             <div className={style.messages}>
-              {messages.map((message) => {
-                const isMine = message.senderId === currentUser.uid;
+              {messagesLoading && (
+                <p className={style.loading}>Загрузка сообщений...</p>
+              )}
 
-                return (
-                  <div
-                    key={message.id}
-                    className={`${style.message} ${
-                      isMine ? style.myMessage : style.otherMessage
-                    }`}
-                  >
-                    {message.imageUrl && (
-                      <img
-                        className={style.messageImage}
-                        src={message.imageUrl}
-                        alt="message"
-                      />
-                    )}
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`${style.message} ${
+                    message.senderId === currentUser?.uid
+                      ? style.myMessage
+                      : style.friendMessage
+                  }`}
+                >
+                  <p>{message.text}</p>
+                </div>
+              ))}
 
-                    {editingId === message.id ? (
-                      <div className={style.editBox}>
-                        <input
-                          value={editingText}
-                          onChange={(e) => setEditingText(e.target.value)}
-                        />
-
-                        <div>
-                          <button onClick={() => saveEdit(message.id)}>
-                            Сохранить
-                          </button>
-                          <button onClick={cancelEdit}>Отмена</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        {message.text && <p>{message.text}</p>}
-
-                        {message.isEdited && (
-                          <span className={style.edited}>изменено</span>
-                        )}
-
-                        {isMine && (
-                          <div className={style.messageActions}>
-                            {message.text && (
-                              <button onClick={() => startEdit(message)}>
-                                Изм.
-                              </button>
-                            )}
-
-                            <button onClick={() => handleDeleteMessage(message.id)}>
-                              Удал.
-                            </button>
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                );
-              })}
+              {!messagesLoading && messages.length === 0 && (
+                <p className={style.emptyMessages}>
+                  Сообщений пока нет. Напишите первым.
+                </p>
+              )}
             </div>
 
-            <form className={style.sendForm} onSubmit={handleSendMessage}>
+            <form className={style.messageForm} onSubmit={handleSendMessage}>
               <input
                 type="text"
-                placeholder="Сообщение..."
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-              />
-
-              <input
-                type="text"
-                placeholder="Ссылка на изображение..."
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
+                value={messageText}
+                onChange={(e) => setMessageText(e.target.value)}
+                placeholder="Напишите сообщение..."
               />
 
               <button type="submit">Отправить</button>
@@ -297,7 +353,7 @@ function Chat() {
           </>
         )}
       </main>
-    </div>
+    </section>
   );
 }
 
