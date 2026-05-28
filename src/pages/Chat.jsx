@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
   doc,
-  endAt,
+  getDoc,
   getDocs,
-  limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
-  startAt,
+  where,
 } from "firebase/firestore";
 import { onAuthStateChanged, signOut } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
@@ -21,122 +20,146 @@ import style from "../styles/Chat.module.css";
 
 function Chat() {
   const navigate = useNavigate();
+  const messagesEndRef = useRef(null);
 
   const [currentUser, setCurrentUser] = useState(null);
+  const [currentUserData, setCurrentUserData] = useState(null);
 
+  const [allContacts, setAllContacts] = useState([]);
   const [searchText, setSearchText] = useState("");
-  const [contacts, setContacts] = useState([]);
+  const [activeSearch, setActiveSearch] = useState("");
+
+  const [chats, setChats] = useState([]);
   const [selectedUser, setSelectedUser] = useState(null);
+  const [selectedChatId, setSelectedChatId] = useState(null);
 
   const [messages, setMessages] = useState([]);
   const [messageText, setMessageText] = useState("");
 
-  const [contactsLoading, setContactsLoading] = useState(false);
-  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const [error, setError] = useState("");
 
-  const chatId = useMemo(() => {
-    if (!currentUser?.uid || !selectedUser?.id) return null;
-
-    return [currentUser.uid, selectedUser.id].sort().join("_");
-  }, [currentUser, selectedUser]);
-
-  const getPhoneDigits = (value) => {
-    return value.replace(/\D/g, "");
-  };
-
-  const isPhoneSearch = (value) => {
-    return /\d/.test(value) && !/[a-zа-яё]/i.test(value);
-  };
-
-  const createChatId = (uid1, uid2) => {
+  const makeChatId = (uid1, uid2) => {
     return [uid1, uid2].sort().join("_");
   };
 
+  const normalize = (value = "") => {
+    return value.toString().trim().toLowerCase();
+  };
+
+  const onlyDigits = (value = "") => {
+    return value.toString().replace(/\D/g, "");
+  };
+
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (!user) {
         navigate("/login");
         return;
       }
 
       setCurrentUser(user);
+
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+          setCurrentUserData({
+            id: userSnap.id,
+            ...userSnap.data(),
+          });
+        } else {
+          setCurrentUserData({
+            id: user.uid,
+            name: user.displayName || "Пользователь",
+            email: user.email,
+            phone: "",
+            photoURL: user.photoURL || "",
+          });
+        }
+      } catch (err) {
+        console.error(err);
+      }
     });
 
     return () => unsubscribe();
   }, [navigate]);
 
-  const loadContacts = useCallback(
-    async (value = "") => {
+  useEffect(() => {
+    const loadContacts = async () => {
       if (!currentUser?.uid) return;
 
-      setContactsLoading(true);
+      setLoadingContacts(true);
       setError("");
 
       try {
         const usersRef = collection(db, "users");
+        const snapshot = await getDocs(usersRef);
 
-        const searchValue = value.trim().toLowerCase();
-        const digits = getPhoneDigits(searchValue);
-
-        let q;
-
-        if (!searchValue) {
-          q = query(usersRef, orderBy("searchName"), limit(20));
-        } else if (isPhoneSearch(searchValue)) {
-          q = query(
-            usersRef,
-            orderBy("searchPhone"),
-            startAt(digits),
-            endAt(digits + "\uf8ff"),
-            limit(20)
-          );
-        } else {
-          q = query(
-            usersRef,
-            orderBy("searchName"),
-            startAt(searchValue),
-            endAt(searchValue + "\uf8ff"),
-            limit(20)
-          );
-        }
-
-        const snapshot = await getDocs(q);
-
-        const data = snapshot.docs
+        const contacts = snapshot.docs
           .map((item) => ({
             id: item.id,
             ...item.data(),
           }))
           .filter((user) => user.id !== currentUser.uid);
 
-        setContacts(data);
+        setAllContacts(contacts);
       } catch (err) {
         console.error(err);
-        setError("Ошибка при загрузке контактов");
+        setError("Не удалось загрузить контакты");
       } finally {
-        setContactsLoading(false);
+        setLoadingContacts(false);
       }
-    },
-    [currentUser]
-  );
+    };
+
+    loadContacts();
+  }, [currentUser]);
 
   useEffect(() => {
-    if (currentUser?.uid) {
-      loadContacts();
-    }
-  }, [currentUser, loadContacts]);
+    if (!currentUser?.uid) return;
+
+    const chatsRef = collection(db, "chats");
+    const q = query(
+      chatsRef,
+      where("participants", "array-contains", currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const data = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+
+        const sortedChats = data.sort((a, b) => {
+          const timeA = a.updatedAt?.seconds || 0;
+          const timeB = b.updatedAt?.seconds || 0;
+          return timeB - timeA;
+        });
+
+        setChats(sortedChats);
+      },
+      (err) => {
+        console.error(err);
+        setError("Не удалось загрузить список чатов");
+      }
+    );
+
+    return () => unsubscribe();
+  }, [currentUser]);
 
   useEffect(() => {
-    if (!chatId) {
+    if (!selectedChatId) {
       setMessages([]);
       return;
     }
 
-    setMessagesLoading(true);
+    setLoadingMessages(true);
 
-    const messagesRef = collection(db, "chats", chatId, "messages");
-
+    const messagesRef = collection(db, "chats", selectedChatId, "messages");
     const q = query(messagesRef, orderBy("createdAt", "asc"));
 
     const unsubscribe = onSnapshot(
@@ -148,21 +171,75 @@ function Chat() {
         }));
 
         setMessages(data);
-        setMessagesLoading(false);
+        setLoadingMessages(false);
       },
       (err) => {
         console.error(err);
-        setError("Ошибка при загрузке сообщений");
-        setMessagesLoading(false);
+        setError("Не удалось загрузить сообщения");
+        setLoadingMessages(false);
       }
     );
 
     return () => unsubscribe();
-  }, [chatId]);
+  }, [selectedChatId]);
 
-  const handleSearch = useCallback(() => {
-    loadContacts(searchText);
-  }, [loadContacts, searchText]);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const filteredContacts = useMemo(() => {
+    const value = normalize(activeSearch);
+    const digits = onlyDigits(activeSearch);
+
+    if (!value) {
+      return allContacts;
+    }
+
+    return allContacts.filter((user) => {
+      const name = normalize(user.name);
+      const email = normalize(user.email);
+      const phone = onlyDigits(user.phone);
+
+      return (
+        name.includes(value) ||
+        email.includes(value) ||
+        phone.includes(digits)
+      );
+    });
+  }, [activeSearch, allContacts]);
+
+  const getOtherUserFromChat = useCallback(
+    (chat) => {
+      if (!currentUser?.uid) return null;
+
+      const otherUserId = chat.participants?.find(
+        (id) => id !== currentUser.uid
+      );
+
+      if (!otherUserId) return null;
+
+      const fromContacts = allContacts.find((user) => user.id === otherUserId);
+
+      if (fromContacts) {
+        return fromContacts;
+      }
+
+      const fromChatInfo = chat.participantsInfo?.[otherUserId];
+
+      return {
+        id: otherUserId,
+        name: fromChatInfo?.name || "Пользователь",
+        phone: fromChatInfo?.phone || "",
+        email: fromChatInfo?.email || "",
+        photoURL: fromChatInfo?.photoURL || "",
+      };
+    },
+    [allContacts, currentUser]
+  );
+
+  const handleSearch = () => {
+    setActiveSearch(searchText);
+  };
 
   const handleSearchKeyDown = (e) => {
     if (e.key === "Enter") {
@@ -173,19 +250,54 @@ function Chat() {
   const handleSelectUser = async (user) => {
     if (!currentUser?.uid) return;
 
+    const chatId = makeChatId(currentUser.uid, user.id);
+
     setSelectedUser(user);
+    setSelectedChatId(chatId);
 
-    const newChatId = createChatId(currentUser.uid, user.id);
+    try {
+      const chatRef = doc(db, "chats", chatId);
+      const chatSnap = await getDoc(chatRef);
 
-    await setDoc(
-      doc(db, "chats", newChatId),
-      {
-        chatId: newChatId,
-        participants: [currentUser.uid, user.id],
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+      if (!chatSnap.exists()) {
+        await setDoc(chatRef, {
+          chatId,
+          participants: [currentUser.uid, user.id],
+          participantsInfo: {
+            [currentUser.uid]: {
+              name:
+                currentUserData?.name ||
+                currentUser.displayName ||
+                "Пользователь",
+              email: currentUserData?.email || currentUser.email || "",
+              phone: currentUserData?.phone || "",
+              photoURL: currentUserData?.photoURL || "",
+            },
+            [user.id]: {
+              name: user.name || "Пользователь",
+              email: user.email || "",
+              phone: user.phone || "",
+              photoURL: user.photoURL || "",
+            },
+          },
+          lastMessage: "",
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      setError("Не удалось открыть чат");
+    }
+  };
+
+  const handleSelectChat = (chat) => {
+    const otherUser = getOtherUserFromChat(chat);
+
+    if (!otherUser) return;
+
+    setSelectedUser(otherUser);
+    setSelectedChatId(chat.id);
   };
 
   const handleSendMessage = async (e) => {
@@ -193,12 +305,14 @@ function Chat() {
 
     const text = messageText.trim();
 
-    if (!text || !chatId || !currentUser?.uid || !selectedUser?.id) return;
+    if (!text || !selectedChatId || !currentUser?.uid || !selectedUser?.id) {
+      return;
+    }
 
     setMessageText("");
 
     try {
-      await addDoc(collection(db, "chats", chatId, "messages"), {
+      await addDoc(collection(db, "chats", selectedChatId, "messages"), {
         text,
         senderId: currentUser.uid,
         receiverId: selectedUser.id,
@@ -206,10 +320,8 @@ function Chat() {
       });
 
       await setDoc(
-        doc(db, "chats", chatId),
+        doc(db, "chats", selectedChatId),
         {
-          chatId,
-          participants: [currentUser.uid, selectedUser.id],
           lastMessage: text,
           updatedAt: serverTimestamp(),
         },
@@ -217,7 +329,7 @@ function Chat() {
       );
     } catch (err) {
       console.error(err);
-      setError("Ошибка при отправке сообщения");
+      setError("Не удалось отправить сообщение");
     }
   };
 
@@ -231,8 +343,8 @@ function Chat() {
       <aside className={style.sidebar}>
         <div className={style.sidebarHeader}>
           <div>
-            <h2>Контакты</h2>
-            <p>Найдите друга и начните чат</p>
+            <h2>Telegram</h2>
+            <p>{currentUserData?.name || currentUser?.email}</p>
           </div>
 
           <button className={style.logoutBtn} onClick={handleLogout}>
@@ -246,51 +358,114 @@ function Chat() {
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder="Имя или телефон..."
+            placeholder="Поиск по имени, телефону..."
           />
 
           <button type="button" onClick={handleSearch}>
-            {contactsLoading ? "..." : "Поиск"}
+            Поиск
           </button>
         </div>
 
         {error && <p className={style.error}>{error}</p>}
 
-        <div className={style.contactsList}>
-          {contacts.map((user) => (
-            <button
-              key={user.id}
-              className={`${style.contactCard} ${
-                selectedUser?.id === user.id ? style.activeContact : ""
-              }`}
-              onClick={() => handleSelectUser(user)}
-            >
-              <div className={style.avatar}>
-                {user.photoURL ? (
-                  <img src={user.photoURL} alt={user.name} loading="lazy" />
-                ) : (
-                  <span>{user.name?.charAt(0)?.toUpperCase() || "U"}</span>
-                )}
-              </div>
+        <div className={style.sidebarScroll}>
+          <div className={style.blockTitle}>
+            <span>Мои чаты</span>
+            <small>{chats.length}</small>
+          </div>
 
-              <div className={style.contactInfo}>
-                <h3>{user.name || "Без имени"}</h3>
-                <p>{user.phone || user.email}</p>
-              </div>
-            </button>
-          ))}
+          <div className={style.chatList}>
+            {chats.map((chat) => {
+              const otherUser = getOtherUserFromChat(chat);
 
-          {!contactsLoading && contacts.length === 0 && (
-            <p className={style.empty}>Контакты не найдены</p>
-          )}
+              if (!otherUser) return null;
+
+              return (
+                <button
+                  key={chat.id}
+                  className={`${style.chatItem} ${
+                    selectedChatId === chat.id ? style.activeChat : ""
+                  }`}
+                  onClick={() => handleSelectChat(chat)}
+                >
+                  <div className={style.avatar}>
+                    {otherUser.photoURL ? (
+                      <img
+                        src={otherUser.photoURL}
+                        alt={otherUser.name}
+                        loading="lazy"
+                      />
+                    ) : (
+                      <span>
+                        {otherUser.name?.charAt(0)?.toUpperCase() || "U"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className={style.chatInfo}>
+                    <div className={style.chatTop}>
+                      <h3>{otherUser.name || "Пользователь"}</h3>
+                    </div>
+
+                    <p>{chat.lastMessage || "Нет сообщений"}</p>
+                  </div>
+                </button>
+              );
+            })}
+
+            {chats.length === 0 && (
+              <p className={style.emptyText}>Список чатов пока пустой</p>
+            )}
+          </div>
+
+          <div className={style.blockTitle}>
+            <span>Контакты</span>
+            <small>{filteredContacts.length}</small>
+          </div>
+
+          <div className={style.contactList}>
+            {loadingContacts && (
+              <p className={style.emptyText}>Загрузка контактов...</p>
+            )}
+
+            {!loadingContacts &&
+              filteredContacts.map((user) => (
+                <button
+                  key={user.id}
+                  className={`${style.contactItem} ${
+                    selectedUser?.id === user.id ? style.activeContact : ""
+                  }`}
+                  onClick={() => handleSelectUser(user)}
+                >
+                  <div className={style.avatarSmall}>
+                    {user.photoURL ? (
+                      <img src={user.photoURL} alt={user.name} loading="lazy" />
+                    ) : (
+                      <span>{user.name?.charAt(0)?.toUpperCase() || "U"}</span>
+                    )}
+                  </div>
+
+                  <div className={style.contactInfo}>
+                    <h3>{user.name || "Без имени"}</h3>
+                    <p>{user.phone || user.email}</p>
+                  </div>
+                </button>
+              ))}
+
+            {!loadingContacts && filteredContacts.length === 0 && (
+              <p className={style.emptyText}>Контакт не найден</p>
+            )}
+          </div>
         </div>
       </aside>
 
-      <main className={style.chat}>
+      <main className={style.chatArea}>
         {!selectedUser ? (
           <div className={style.noChat}>
-            <h2>Выберите контакт</h2>
-            <p>Слева найдите пользователя и откройте переписку.</p>
+            <div className={style.noChatBox}>
+              <h2>Выберите чат</h2>
+              <p>Найдите контакт слева и начните переписку.</p>
+            </div>
           </div>
         ) : (
           <>
@@ -310,14 +485,14 @@ function Chat() {
               </div>
 
               <div>
-                <h2>{selectedUser.name || "Без имени"}</h2>
+                <h2>{selectedUser.name || "Пользователь"}</h2>
                 <p>{selectedUser.phone || selectedUser.email}</p>
               </div>
             </div>
 
             <div className={style.messages}>
-              {messagesLoading && (
-                <p className={style.loading}>Загрузка сообщений...</p>
+              {loadingMessages && (
+                <p className={style.emptyText}>Загрузка сообщений...</p>
               )}
 
               {messages.map((message) => (
@@ -333,11 +508,7 @@ function Chat() {
                 </div>
               ))}
 
-              {!messagesLoading && messages.length === 0 && (
-                <p className={style.emptyMessages}>
-                  Сообщений пока нет. Напишите первым.
-                </p>
-              )}
+              <div ref={messagesEndRef} />
             </div>
 
             <form className={style.messageForm} onSubmit={handleSendMessage}>
