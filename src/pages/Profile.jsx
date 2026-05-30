@@ -1,98 +1,209 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { updateProfile } from "firebase/auth";
-import { doc, getDoc, updateDoc } from "firebase/firestore";
+import { onAuthStateChanged, signOut, updateProfile } from "firebase/auth";
+import { doc, getDoc, setDoc, serverTimestamp } from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
 
 import { auth, db } from "../firebase/firebase";
-import { useAuth } from "../context/AuthContext";
 import style from "../styles/Profile.module.css";
 
 function Profile() {
-  const { currentUser } = useAuth();
+  const navigate = useNavigate();
 
-  const [name, setName] = useState("");
-  const [avatarUrl, setAvatarUrl] = useState("");
-  const [email, setEmail] = useState("");
-  const [message, setMessage] = useState("");
+  const [currentUser, setCurrentUser] = useState(null);
+
+  const [form, setForm] = useState({
+    name: "",
+    phone: "",
+    photoURL: "",
+    email: "",
+  });
+
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  const onlyDigits = (value) => {
+    return value.replace(/\D/g, "");
+  };
 
   useEffect(() => {
-    const getUserData = async () => {
-      const userRef = doc(db, "users", currentUser.uid);
-      const userSnap = await getDoc(userRef);
-
-      if (userSnap.exists()) {
-        const data = userSnap.data();
-
-        setName(data.name || "");
-        setAvatarUrl(data.avatarUrl || "");
-        setEmail(data.email || "");
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!user) {
+        navigate("/login");
+        return;
       }
-    };
 
-    getUserData();
-  }, [currentUser.uid]);
+      setCurrentUser(user);
 
-  const handleUpdateProfile = async (e) => {
+      try {
+        const userRef = doc(db, "users", user.uid);
+        const userSnap = await getDoc(userRef);
+
+        if (userSnap.exists()) {
+          const data = userSnap.data();
+
+          setForm({
+            name: data.name || user.displayName || "",
+            phone: data.phone || "",
+            photoURL: data.photoURL || user.photoURL || "",
+            email: data.email || user.email || "",
+          });
+        } else {
+          setForm({
+            name: user.displayName || "",
+            phone: "",
+            photoURL: user.photoURL || "",
+            email: user.email || "",
+          });
+        }
+      } catch (error) {
+        console.error(error);
+        alert("Ошибка при загрузке профиля");
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [navigate]);
+
+  const handleChange = (e) => {
+    setForm({
+      ...form,
+      [e.target.name]: e.target.value,
+    });
+  };
+
+  const handleSave = async (e) => {
     e.preventDefault();
-    setMessage("");
+
+    if (!currentUser) return;
+
+    const name = form.name.trim();
+    const phone = form.phone.trim();
+    const photoURL = form.photoURL.trim();
+
+    if (!name) {
+      alert("Введите имя");
+      return;
+    }
+
+    setSaving(true);
 
     try {
-      await updateProfile(auth.currentUser, {
+      await updateProfile(currentUser, {
         displayName: name,
-        photoURL: avatarUrl,
+        photoURL: photoURL,
       });
 
-      await updateDoc(doc(db, "users", currentUser.uid), {
-        name,
-        avatarUrl,
-      });
+      await setDoc(
+        doc(db, "users", currentUser.uid),
+        {
+          uid: currentUser.uid,
+          name: name,
+          searchName: name.toLowerCase(),
+          phone: phone,
+          phoneDigits: onlyDigits(phone),
+          searchPhone: onlyDigits(phone),
+          photoURL: photoURL,
+          email: currentUser.email,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
 
-      setMessage("Профиль обновлён");
+      alert("Профиль обновлён");
+      navigate("/chat");
     } catch (error) {
       console.error(error);
-      setMessage("Ошибка обновления профиля");
+      alert("Ошибка при сохранении профиля");
+    } finally {
+      setSaving(false);
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      navigate("/login");
+    } catch (error) {
+      console.error(error);
+      alert("Ошибка при выходе");
+    }
+  };
+
+  if (loading) {
+    return <div className={style.loading}>Загрузка профиля...</div>;
+  }
+
   return (
-    <div className={style.page}>
-      <form className={style.card} onSubmit={handleUpdateProfile}>
-        <Link to="/chat" className={style.back}>
-          Назад в чат
-        </Link>
+    <section className={style.page}>
+      <div className={style.card}>
+        <button className={style.backBtn} onClick={() => navigate("/chat")}>
+          ← Назад
+        </button>
 
-        <h2>Профиль</h2>
+        <div className={style.profileTop}>
+          <div className={style.avatar}>
+            {form.photoURL ? (
+              <img src={form.photoURL} alt={form.name} />
+            ) : (
+              <span>{form.name?.charAt(0)?.toUpperCase() || "U"}</span>
+            )}
+          </div>
 
-        <div className={style.avatarBox}>
-          {avatarUrl ? (
-            <img src={avatarUrl} alt="avatar" />
-          ) : (
-            <span>{name?.charAt(0)}</span>
-          )}
+          <h1>Мой профиль</h1>
+          <p>Здесь можно изменить имя, телефон и фото</p>
         </div>
 
-        {message && <p className={style.message}>{message}</p>}
+        <form className={style.form} onSubmit={handleSave}>
+          <label>
+            Имя
+            <input
+              type="text"
+              name="name"
+              value={form.name}
+              onChange={handleChange}
+              placeholder="Ваше имя"
+            />
+          </label>
 
-        <label>Email</label>
-        <input value={email} disabled />
+          <label>
+            Телефон
+            <input
+              type="tel"
+              name="phone"
+              value={form.phone}
+              onChange={handleChange}
+              placeholder="+996700123456"
+            />
+          </label>
 
-        <label>Имя</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Введите имя"
-        />
+          <label>
+            Ссылка на фото
+            <input
+              type="text"
+              name="photoURL"
+              value={form.photoURL}
+              onChange={handleChange}
+              placeholder="https://..."
+            />
+          </label>
 
-        <label>Ссылка на аватарку</label>
-        <input
-          value={avatarUrl}
-          onChange={(e) => setAvatarUrl(e.target.value)}
-          placeholder="https://..."
-        />
+          <label>
+            Email
+            <input type="email" value={form.email} disabled />
+          </label>
 
-        <button type="submit">Сохранить</button>
-      </form>
-    </div>
+          <button className={style.saveBtn} type="submit" disabled={saving}>
+            {saving ? "Сохранение..." : "Сохранить"}
+          </button>
+        </form>
+
+        <button className={style.logoutBtn} onClick={handleLogout}>
+          Выйти из аккаунта
+        </button>
+      </div>
+    </section>
   );
 }
 
