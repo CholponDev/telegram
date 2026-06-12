@@ -1,0 +1,57 @@
+:root {
+  --app-bg: #edf3f8;
+  --card-bg: #ffffff;
+  --main-bg: #f8fbff;
+
+  --text-main: #17212b;
+  --text-muted: #7b8794;
+
+  --border-color: #d9e2ec;
+
+  --primary: #4f8cff;
+  --primary-hover: #337cf3;
+
+  --input-bg: #f7fafc;
+  --soft-bg: #f4f8fc;
+
+  --danger-bg: #fff1f1;
+  --danger-text: #d93025;
+}
+
+html[data-theme="dark"] {
+  --app-bg: #0f172a;
+  --card-bg: #111827;
+  --main-bg: #1f2937;
+
+  --text-main: #f9fafb;
+  --text-muted: #9ca3af;
+
+  --border-color: #243044;
+
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+
+  --input-bg: #1f2937;
+  --soft-bg: #263244;
+
+  --danger-bg: #3f1d1d;
+  --danger-text: #ff8b8b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--app-bg);
+  color: var(--text-main);
+  font-family: Arial, sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
